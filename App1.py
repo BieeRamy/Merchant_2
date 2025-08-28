@@ -1,64 +1,86 @@
+# app1.py
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+from tabulate import tabulate
 
-# Load your data
-df = pd.read_csv("merged_data.csv")  # Replace with your CSV path
-df['transaction_date'] = pd.to_datetime(df['transaction_date'])
+# ------------------------------
+# Load Data
+# ------------------------------
+@st.cache_data
+def load_data():
+    df = pd.read_csv("merchant_data.csv")
+    df['transaction_date'] = pd.to_datetime(df['transaction_date'])
+    return df
 
-st.set_page_config(page_title="Merchant Growth Dashboard", layout="wide")
+df = load_data()
 
-st.title("Dynamic Merchant Growth Dashboard")
-
-# -------------------------------
+# ------------------------------
 # Sidebar filters
-# -------------------------------
+# ------------------------------
 st.sidebar.header("Filters")
 
 # Date range
-start_date, end_date = st.sidebar.date_input(
-    "Select Date Range",
-    [df['transaction_date'].min(), df['transaction_date'].max()]
-)
+start_date = st.sidebar.date_input("Start Date", df['transaction_date'].min())
+end_date = st.sidebar.date_input("End Date", df['transaction_date'].max())
 
-# Top/Bottom selection
-top_bottom = st.sidebar.selectbox("Top/Bottom Merchants", ["Top 10", "Bottom 10"])
+# Top/Bottom selector
+top_bottom = st.sidebar.selectbox("Top/Bottom Merchants", ['Top 10', 'Bottom 10'])
 
-# Metrics selection
-metrics = st.sidebar.multiselect(
+# Metrics
+selected_metrics = st.sidebar.multiselect(
     "Select Growth Metrics (Bars)",
-    ["Avg MoM Growth", "Avg QoQ Growth", "Avg YoY Growth"],
-    default=["Avg MoM Growth", "Avg QoQ Growth", "Avg YoY Growth"]
+    ['Avg MoM Growth', 'Avg QoQ Growth', 'Avg YoY Growth'],
+    default=['Avg MoM Growth', 'Avg QoQ Growth', 'Avg YoY Growth']
 )
 
-# Category, City, Status filters
-category_filter = st.sidebar.multiselect("Category", df['category_x'].unique())
-city_filter = st.sidebar.multiselect("City", df['city_x'].unique())
-status_filter = st.sidebar.multiselect("Account Status", df['account_status'].unique())
+# Category filter
+if 'category_x' in df.columns:
+    categories = st.sidebar.multiselect(
+        "Filter by Category", df['category_x'].unique(), default=None
+    )
+else:
+    categories = None
 
-# -------------------------------
-# Filter data
-# -------------------------------
+# City filter
+if 'city_x' in df.columns:
+    cities = st.sidebar.multiselect(
+        "Filter by City", df['city_x'].unique(), default=None
+    )
+else:
+    cities = None
+
+# Account status filter
+if 'account_status' in df.columns:
+    statuses = st.sidebar.multiselect(
+        "Filter by Account Status", df['account_status'].unique(), default=None
+    )
+else:
+    statuses = None
+
+# ------------------------------
+# Filter Data
+# ------------------------------
 df_filtered = df[(df['transaction_date'] >= pd.to_datetime(start_date)) &
                  (df['transaction_date'] <= pd.to_datetime(end_date))]
 
-if category_filter:
-    df_filtered = df_filtered[df_filtered['category_x'].isin(category_filter)]
-if city_filter:
-    df_filtered = df_filtered[df_filtered['city_x'].isin(city_filter)]
-if status_filter:
-    df_filtered = df_filtered[df_filtered['account_status'].isin(status_filter)]
+if categories:
+    df_filtered = df_filtered[df_filtered['category_x'].isin(categories)]
+if cities:
+    df_filtered = df_filtered[df_filtered['city_x'].isin(cities)]
+if statuses:
+    df_filtered = df_filtered[df_filtered['account_status'].isin(statuses)]
 
-# -------------------------------
-# Prepare monthly metrics
-# -------------------------------
+# Prepare Year-Month
 df_filtered['year_month'] = df_filtered['transaction_date'].dt.to_period('M').astype(str)
+
+# Aggregate monthly per merchant
 monthly = df_filtered.groupby(['merchant_id','year_month']).agg(
     txn_count=('transaction_id','count'),
     total_amount=('amount','sum')
 ).reset_index().sort_values(['merchant_id','year_month'])
 
-# MoM, QoQ, YoY growth
+# Calculate MoM/QoQ/YoY growth
 monthly['MoM_txn'] = monthly.groupby('merchant_id')['txn_count'].pct_change() * 100
 monthly['QoQ_txn'] = monthly.groupby('merchant_id')['txn_count'].pct_change(periods=3) * 100
 monthly['YoY_txn'] = monthly.groupby('merchant_id')['txn_count'].pct_change(periods=12) * 100
@@ -72,40 +94,40 @@ merchant_summary = monthly.groupby('merchant_id').agg(
     end_amt=('total_amount','last')
 ).reset_index()
 
-# CAGR
+# Calculate CAGR
 n_years = (pd.to_datetime(end_date) - pd.to_datetime(start_date)).days / 365.25
-merchant_summary['CAGR'] = ((merchant_summary['end_amt'] / merchant_summary['start_amt']) ** (1/n_years) -1) * 100
+merchant_summary['CAGR_num'] = ((merchant_summary['end_amt'] / merchant_summary['start_amt']) ** (1/n_years) -1) * 100
 
-# Top/Bottom 10
-if top_bottom.startswith("Top"):
+# Select top/bottom 10
+if top_bottom.lower().startswith('top'):
     df_plot = merchant_summary.sort_values('avg_QoQ_txn', ascending=False).head(10)
 else:
     df_plot = merchant_summary.sort_values('avg_QoQ_txn', ascending=True).head(10)
 
-# -------------------------------
-# Plot chart
-# -------------------------------
+# ------------------------------
+# Build Plotly Figure
+# ------------------------------
 fig = go.Figure()
 colors = {'Avg MoM Growth':'royalblue','Avg QoQ Growth':'crimson','Avg YoY Growth':'green'}
 
 metric_map = {
-    "Avg MoM Growth":"avg_MoM_txn",
-    "Avg QoQ Growth":"avg_QoQ_txn",
-    "Avg YoY Growth":"avg_YoY_txn"
+    'Avg MoM Growth':'avg_MoM_txn',
+    'Avg QoQ Growth':'avg_QoQ_txn',
+    'Avg YoY Growth':'avg_YoY_txn'
 }
 
-for m in metrics:
+for metric in selected_metrics:
     fig.add_trace(go.Bar(
         x=df_plot['merchant_id'],
-        y=df_plot[metric_map[m]],
-        name=m,
-        marker_color=colors.get(m,'grey')
+        y=df_plot[metric_map[metric]],
+        name=metric,
+        marker_color=colors.get(metric,'grey')
     ))
 
-# CAGR line
+# Add CAGR line
 fig.add_trace(go.Scatter(
     x=df_plot['merchant_id'],
-    y=df_plot['CAGR'],
+    y=df_plot['CAGR_num'],
     mode='lines+markers',
     name='CAGR',
     line=dict(color='orange', width=3),
@@ -116,16 +138,20 @@ fig.update_layout(
     title=f"{top_bottom} Merchants - Growth Metrics",
     xaxis_title="Merchant ID",
     yaxis_title="Growth (%) (Bars)",
-    yaxis2=dict(title="CAGR (%)", overlaying='y', side='right'),
+    yaxis2=dict(
+        title="CAGR (%)",
+        overlaying='y',
+        side='right'
+    ),
     barmode='group',
-    template='plotly_white',
-    height=600
+    template='plotly_white'
 )
 
+# ------------------------------
+# Display
+# ------------------------------
 st.plotly_chart(fig, use_container_width=True)
 
-# -------------------------------
 # Display table
-# -------------------------------
 st.subheader("Merchant Summary Table")
-st.dataframe(df_plot)
+st.text(tabulate(df_plot, headers='keys', tablefmt='psql', showindex=False))
